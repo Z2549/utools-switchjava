@@ -1,0 +1,13 @@
+{
+	
+	"logo": "logo.png",
+    "preload":"preload_list.js",
+    "platform":"win32",
+	"features": [
+		{
+		  "code": "switch",
+		  "explain": "快速切换java版本",
+			"cmds":["switchjava", "switch","java","8","11","17","18"]
+		}
+	]
+}
