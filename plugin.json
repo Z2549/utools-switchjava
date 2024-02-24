@@ -7,7 +7,7 @@
 		{
 		  "code": "switch",
 		  "explain": "快速切换java版本",
-			"cmds":["switchjava", "switch","java","8","11","17","18"]
+			"cmds":["switchjava", "switch","java","8","11","17","18","21"]
 		}
 	]
 }

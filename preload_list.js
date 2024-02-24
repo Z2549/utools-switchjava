@@ -31,6 +31,11 @@ window.exports = {
                         title: '18',
                         description: '切换到java 18',
                         icon: ''
+                    },
+                    {
+                        title: '21',
+                        description: '切换到java 21',
+                        icon: ''
                     }
                 ])
             },
@@ -42,23 +47,28 @@ window.exports = {
                 }
                 if(searchWord.title=='8'){
                     window.utools.hideMainWindow()
-                        fs.writeFileSync(decPath+'\\switchjava\\j8.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("%JAVA_HOME%")="%JAVA8_HOME%" \r\nMsgBox "已切换至java8",,"SwitchJava"')
+                    fs.writeFileSync(decPath+'\\switchjava\\j8.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("JAVA_HOME")="%JAVA8_HOME%" \r\nMsgBox "已切换至java8",,"SwitchJava"')
                     utools.shellOpenPath(decPath+'\\switchjava\\j8.vbs')
                 } 
                 if(searchWord.title=='11'){
                     window.utools.hideMainWindow()
-                    fs.writeFileSync(decPath+'\\switchjava\\j11.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("%JAVA_HOME%")="%JAVA11_HOME%" \r\nMsgBox "已切换至java11",,"SwitchJava"')
+                    fs.writeFileSync(decPath+'\\switchjava\\j11.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("JAVA_HOME")="%JAVA11_HOME%" \r\nMsgBox "已切换至java11",,"SwitchJava"')
                     utools.shellOpenPath(decPath+'\\switchjava\\j11.vbs')
                 }
                 if(searchWord.title=='17'){
                     window.utools.hideMainWindow()
-                    fs.writeFileSync(decPath+'\\switchjava\\j17.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("%JAVA_HOME%")="%JAVA17_HOME%" \r\nMsgBox "已切换至java17",,"SwitchJava"')
+                    fs.writeFileSync(decPath+'\\switchjava\\j17.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("JAVA_HOME")="%JAVA17_HOME%" \r\nMsgBox "已切换至java17",,"SwitchJava"')
                     utools.shellOpenPath(decPath+'\\switchjava\\j17.vbs')
                 }
                 if(searchWord.title=='18'){
                     window.utools.hideMainWindow()
-                    fs.writeFileSync(decPath+'\\switchjava\\j18.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("%JAVA_HOME%")="%JAVA18_HOME%" \r\nMsgBox "已切换至java18",,"SwitchJava"')
+                    fs.writeFileSync(decPath+'\\switchjava\\j18.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("JAVA_HOME")="%JAVA18_HOME%" \r\nMsgBox "已切换至java18",,"SwitchJava"')
                     utools.shellOpenPath(decPath+'\\switchjava\\j18.vbs')
+                }
+                if(searchWord.title=='21'){
+                    window.utools.hideMainWindow()
+                    fs.writeFileSync(decPath+'\\switchjava\\j21.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("JAVA_HOME")="%JAVA21_HOME%" \r\nMsgBox "已切换至java21",,"SwitchJava"')
+                    utools.shellOpenPath(decPath+'\\switchjava\\j21.vbs')
                 }
                 window.utools.outPlugin()
             },
@@ -69,23 +79,28 @@ window.exports = {
                 }
                 if(itemData.title=='8'){
                     window.utools.hideMainWindow()
-                        fs.writeFileSync(decPath+'\\switchjava\\j8.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("%JAVA_HOME%")="%JAVA8_HOME%" \r\nMsgBox "已切换至java8",,"SwitchJava"')
+                        fs.writeFileSync(decPath+'\\switchjava\\j8.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("JAVA_HOME")="%JAVA8_HOME%" \r\nMsgBox "已切换至java8",,"SwitchJava"')
                     utools.shellOpenPath(decPath+'\\switchjava\\j8.vbs')
                 } 
                 if(itemData.title=='11'){
                     window.utools.hideMainWindow()
-                    fs.writeFileSync(decPath+'\\switchjava\\j11.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("%JAVA_HOME%")="%JAVA11_HOME%" \r\nMsgBox "已切换至java11",,"SwitchJava"')
+                    fs.writeFileSync(decPath+'\\switchjava\\j11.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("JAVA_HOME")="%JAVA11_HOME%" \r\nMsgBox "已切换至java11",,"SwitchJava"')
                     utools.shellOpenPath(decPath+'\\switchjava\\j11.vbs')
                 }
                 if(itemData.title=='17'){
                     window.utools.hideMainWindow()
-                    fs.writeFileSync(decPath+'\\switchjava\\j17.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("%JAVA_HOME%")="%JAVA17_HOME%" \r\nMsgBox "已切换至java17",,"SwitchJava"')
+                    fs.writeFileSync(decPath+'\\switchjava\\j17.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("JAVA_HOME")="%JAVA17_HOME%" \r\nMsgBox "已切换至java17",,"SwitchJava"')
                     utools.shellOpenPath(decPath+'\\switchjava\\j17.vbs')
                 }
                 if(itemData.title=='18'){
                     window.utools.hideMainWindow()
-                    fs.writeFileSync(decPath+'\\switchjava\\j18.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("%JAVA_HOME%")="%JAVA18_HOME%" \r\nMsgBox "已切换至java18",,"SwitchJava"')
+                    fs.writeFileSync(decPath+'\\switchjava\\j18.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("JAVA_HOME")="%JAVA18_HOME%" \r\nMsgBox "已切换至java18",,"SwitchJava"')
                     utools.shellOpenPath(decPath+'\\switchjava\\j18.vbs')
+                }
+                if(itemData.title=='21'){
+                    window.utools.hideMainWindow()
+                    fs.writeFileSync(decPath+'\\switchjava\\j21.vbs','Set WshShell = WScript.CreateObject("WScript.Shell") \r\nIf WScript.Arguments.Length = 0 Then \r\nSet ObjShell = CreateObject("Shell.Application") \r\nObjShell.ShellExecute "wscript.exe" _ \r\n, """" & WScript.ScriptFullName & """ RunAsAdministrator", , "runas", 1 \r\nWScript.Quit \r\nEnd if \r\nSet pSysEnv = CreateObject("WScript.Shell").Environment("System")\r\npSysEnv("JAVA_HOME")="%JAVA21_HOME%" \r\nMsgBox "已切换至java21",,"SwitchJava"')
+                    utools.shellOpenPath(decPath+'\\switchjava\\j21.vbs')
                 }
                 window.utools.outPlugin()
             },
