@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>SwitchJava</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      font-family: system-ui, "Microsoft YaHei", sans-serif;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      user-select: none;
+      background: #ffffff;
+      color: #1f2328;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #1e2227; color: #e6e8ea; }
+      .msg { color: #c9d1d9; }
+      .bar-track { background: #2d333b; }
+      .btn { background: #2d333b; color: #e6e8ea; }
+      .btn:hover { background: #3a424b; }
+    }
+    /* 标题栏可拖动窗口 */
+    .drag { -webkit-app-region: drag; height: 26px; flex: none; }
+    .main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 6px 24px 0; overflow-y: auto; }
+    .icon {
+      width: 46px; height: 46px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 26px; color: #fff; flex: none; margin-bottom: 12px;
+    }
+    .ok .icon { background: #1f9d55; }
+    .fail .icon { background: #d92d20; }
+    .ok .icon::before { content: "\2713"; }
+    .fail .icon::before { content: "\2715"; }
+    h1 { font-size: 16px; font-weight: 600; margin-bottom: 10px; text-align: center; }
+    .msg {
+      font-size: 12.5px; line-height: 1.65; white-space: pre-wrap;
+      word-break: break-all; width: 100%; color: #57606a;
+    }
+    .foot { flex: none; padding: 12px 24px 16px; display: flex; align-items: center; gap: 12px; }
+    .btn {
+      -webkit-app-region: no-drag;
+      border: none; border-radius: 6px; padding: 6px 22px;
+      font-size: 13px; cursor: pointer; background: #eaeef2; color: #1f2328;
+    }
+    .btn:hover { background: #dde3e9; }
+    .ok .btn:hover { background: #e7f5ee; }
+    .fail .btn:hover { background: #fdecea; }
+    @media (prefers-color-scheme: dark) { .ok .btn:hover { background: #1f4a35; } .fail .btn:hover { background: #4a2320; } }
+    .bar-track { flex: 1; height: 4px; border-radius: 2px; background: #eaeef2; overflow: hidden; }
+    .bar { height: 100%; width: 100%; border-radius: 2px; }
+    .ok .bar { background: #1f9d55; }
+    .fail .bar { background: #d92d20; }
+  </style>
+</head>
+<body>
+  <div class="drag"></div>
+  <div class="main" id="main">
+    <div class="icon"></div>
+    <h1 id="title"></h1>
+    <div class="msg" id="msg"></div>
+  </div>
+  <div class="foot">
+    <div class="bar-track"><div class="bar" id="bar"></div></div>
+    <button class="btn" id="btn">知道了</button>
+  </div>
+  <script>
+    var AUTO_CLOSE_MS = 10000;
+    var params = new URLSearchParams(location.search);
+    var ok = params.get('ok') === '1';
+    var title = params.get('title') || (ok ? '操作完成' : '操作失败');
+    var msg = params.get('msg') || '';
+
+    // 文本必须以纯文本方式注入，不能拼 HTML
+    document.body.classList.add(ok ? 'ok' : 'fail');
+    document.getElementById('title').textContent = title;
+    document.getElementById('msg').textContent = msg;
+
+    var start = Date.now();
+    var bar = document.getElementById('bar');
+    var timer = setInterval(function () {
+      var left = 1 - (Date.now() - start) / AUTO_CLOSE_MS;
+      if (left <= 0) { clearInterval(timer); window.close(); return; }
+      bar.style.width = (left * 100).toFixed(1) + '%';
+    }, 100);
+
+    document.getElementById('btn').addEventListener('click', function () { window.close(); });
+    window.addEventListener('keydown', function () { window.close(); });
+    setTimeout(function () {
+      var m = document.getElementById('main');
+      if (m && m.scrollHeight > m.clientHeight + 2) m.scrollTop = m.scrollHeight;
+    }, 50);
+  </script>
+</body>
+</html>

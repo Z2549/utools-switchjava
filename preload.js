@@ -81,6 +81,42 @@ function rememberResult(ok, text) {
 }
 
 /**
+ * 操作完成后弹出的结果提示框。
+ *
+ * 实现说明（基于本机 uTools 7.8.0 客户端源码确认）：
+ * - createBrowserWindow 的 url 必须是插件目录内、.html 结尾的相对路径，允许 ?query 传参；
+ * - outPlugin 只会处理"调用方自己的窗口"，不会销毁 createBrowserWindow 创建的独立窗口，
+ *   因此弹窗可以在插件退出后继续存活；
+ * - 页面里 window.close() 由客户端托管生效，可以实现自动关闭。
+ *
+ * 失败（旧版 uTools 无此 API 等）时返回 false，调用方回退到 showNotification。
+ */
+function showResultDialog(ok, title, message) {
+  try {
+    if (typeof window.utools.createBrowserWindow !== 'function') return false
+    const query =
+      '?ok=' + (ok ? '1' : '0') +
+      '&title=' + encodeURIComponent(String(title || '')) +
+      '&msg=' + encodeURIComponent(String(message || ''))
+    window.utools.createBrowserWindow('result.html' + query, {
+      width: 460,
+      height: 240,
+      useContentSize: true,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      alwaysOnTop: true,
+      center: true,
+      autoHideMenuBar: true,
+    })
+    return true
+  } catch (err) {
+    return false
+  }
+}
+
+/**
  * reg.exe / 控制台程序的输出按系统 ANSI 代码页编码（简中为 GBK）。
  * 先判断是否含高位字节，再选择 UTF-8 或 GBK 解码，避免中文路径乱码。
  */
@@ -889,18 +925,34 @@ function runOps(ops, ctx) {
     ops.some((op) => /:Machine$/.test(op)) ||
     (ctx.scope === SCOPE_USER && ops.indexOf('removeOtherJavaHome') >= 0)
 
-  const commonArgs = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass']
+  // -WindowStyle Hidden 是"不弹黑窗"的第一道保险： PowerShell 启动时就把自己的控制台
+  // 窗口设为隐藏。它对 -File 与 -EncodedCommand 两种调用方式都有效。
+  const commonArgs = [
+    '-NoProfile',
+    '-NonInteractive',
+    '-WindowStyle',
+    'Hidden',
+    '-ExecutionPolicy',
+    'Bypass',
+  ]
 
   let launchError = null
   try {
     if (needsElevation) {
       // 外层脚本自身很短，走 -EncodedCommand 只为杜绝引号注入；
       // 真正的逻辑脚本通过 -File 交给管理员进程执行。
+      //
+      // 隐藏窗口是双保险：
+      //   ① Start-Process 的 -WindowStyle Hidden 作用于被创建进程的窗口；
+      //   ② 参数里再带一个 -WindowStyle Hidden，让提权后的 powershell 自己把
+      //      控制台窗口藏起来。少了其中任何一个，Windows 上都会闪出一个黑框
+      //      （这正是"切换/修复时会弹出 PowerShell 窗口"的来源）。
+      // UAC 授权对话框本身无法隐藏，也不需要隐藏。
       const outerScript = [
         'try {',
         '  $p = Start-Process -FilePath ' +
           psQuote(PS_EXE) +
-          " -Verb RunAs -PassThru -Wait -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File'," +
+          " -Verb RunAs -WindowStyle Hidden -PassThru -Wait -ArgumentList '-NoProfile','-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File'," +
           psQuote(scriptFile),
         '  exit [int]$p.ExitCode',
         '} catch {',
@@ -1013,7 +1065,10 @@ function performSwitch(jdk, callbackSetList) {
   if (!result.ok) {
     const text = '切换失败：' + result.messages.join('；')
     rememberResult(false, text)
-    notify(text)
+    // 弹窗为主，通知兜底（弹窗失败或旧版 uTools 才用）
+    if (!showResultDialog(false, '切换失败', result.messages.join('；'))) {
+      notify(text)
+    }
     // 失败时不要急着退出：把结果留在列表里，用户才能看清到底发生了什么
     if (typeof callbackSetList === 'function') {
       refresh(callbackSetList)
@@ -1057,7 +1112,10 @@ function performSwitch(jdk, callbackSetList) {
   }
 
   rememberResult(true, message)
-  notify(message + '。已打开的终端需重开才生效。')
+  // 提示框要能撑过 outPlugin：独立窗口不随插件退出销毁（客户端源码已确认）
+  if (!showResultDialog(true, '切换完成', message + '\n已打开的终端需重开才生效。')) {
+    notify(message + '。已打开的终端需重开才生效。')
+  }
   window.utools.outPlugin()
 }
 
@@ -1112,7 +1170,10 @@ function runFixPath() {
   invalidateSnapshot()
   const text = formatResult('PATH 修复', result)
   rememberResult(result.ok, text)
-  notify(text)
+  // 不退出插件：列表里同步显示结果（失败标红），并弹出提示框双重确认
+  if (!showResultDialog(result.ok, result.ok ? 'PATH 修复完成' : 'PATH 修复失败', text)) {
+    notify(text)
+  }
 }
 
 function runRemoveOtherJavaHome() {
@@ -1123,7 +1184,9 @@ function runRemoveOtherJavaHome() {
     ? '清理完成 — ' + result.messages.join('；')
     : '清理失败：' + result.messages.join('；')
   rememberResult(result.ok, text)
-  notify(text)
+  if (!showResultDialog(result.ok, result.ok ? '清理完成' : '清理失败', text)) {
+    notify(text)
+  }
 }
 
 /* ================================================================== *

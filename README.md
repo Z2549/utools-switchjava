@@ -22,8 +22,9 @@
   - 系统级：弹一次 UAC，对全部用户生效。
 - **自动修复 PATH 分两步**：切换时只修**当前作用域**（用户级免 UAC，所以常规切换永远瞬时完成、不会被打断）；真正卡住 `java` 的抢占项若在**系统** PATH，则以红字项单独提示，点它才弹一次 UAC。刻意不把提权捆绑进切换 —— 否则你只要在 UAC 上点「否」，连 `JAVA_HOME` 都写不进去（详见下文）。
 - **诊断项**（按需出现）：PATH 被其他 java 目录抢先（含在**另一个作用域**里抢先的情形）、PATH 缺少 `%JAVA_HOME%\bin`、两个作用域中互相冲突的 `JAVA_HOME`、当前 `JAVA_HOME` 是无效的间接引用。
-- **写入后自检**：每次写入都「写 → 回读比对 → 实跑一次 `java -version`」，把真实版本号写进通知；若实测版本与所选 JDK 对不上，会直接点出来，不再有「不知道到底成没成功」。
+- **写入后自检**：每次写入都「写 → 回读比对 → 实跑一次 `java -version`」，把真实版本号显示在结果提示框里；若实测版本与所选 JDK 对不上，会直接点出来，不再有「不知道到底成没成功」。
 - **执行结果留在列表里**：上一次操作的结果固定显示在列表顶部，失败时标红并写明原因（回车可关闭）。失败时插件**不会退出**，让你能直接读到问题所在。
+- **切换 / 修复完成后弹出结果提示框**：独立小窗口居中显示本次结果（成功绿色 / 失败红色），10 秒自动关闭，点「知道了」或按任意键立即关闭，跟随系统深浅色。插件退出后弹窗仍然存活；旧版 uTools 无 `createBrowserWindow` API 时自动回退为系统通知。
 - **修复类条目红色高亮**：凡是「点一下就能修好」的诊断项，标题与说明会显示为红色并带左侧红条，与普通选项一眼区分（实现原理见下文）。
 - 直接输入版本号即可切换：在 uTools 搜索框输入 `8` / `11` / `17` / `21` 等，选择「按版本号切换 Java」即完成，无需进入列表。
 
@@ -37,7 +38,7 @@
 
 **方式二（打包安装）**
 
-在开发者工具中打包为 `.upx`，双击安装。打包内容只需：`plugin.json`、`preload.js`、`logo.png`。
+在开发者工具中打包为 `.upx`，双击安装。打包内容只需：`plugin.json`、`preload.js`、`result.html`、`logo.png`（`result.html` 是切换/修复后的结果提示框页面，缺失时弹窗功能回退为系统通知）。
 
 ## 使用
 
@@ -136,8 +137,8 @@ Windows 合并 PATH 的顺序是 **系统 PATH 在前 + 用户 PATH 追加在后
 修正方式是把逻辑脚本落成临时 `.ps1`，外层只负责用 `-File` 拉起它：
 
 ```powershell
-Start-Process -FilePath <powershell.exe> -Verb RunAs -PassThru -Wait `
-  -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',<临时脚本>
+Start-Process -FilePath <powershell.exe> -Verb RunAs -WindowStyle Hidden -PassThru -Wait `
+  -ArgumentList '-NoProfile','-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',<临时脚本>
 ```
 
 命令行长度因此从约 59000 降到约 **1000**，且与脚本规模彻底解耦；引号注入面依然是零（路径全部由插件生成、经 `'` → `''` 转义）。两个容易忽略的配套细节：
@@ -149,13 +150,24 @@ Start-Process -FilePath <powershell.exe> -Verb RunAs -PassThru -Wait `
 
 ### 写入后如何确认
 
-每次写入都会「写 → 回读比对 → 实跑一次 `java -version`」，结果直接显示在通知里，例如：
+每次写入都会「写 → 回读比对 → 实跑一次 `java -version`」，结果显示在弹出的提示框里，例如：
 
 ```
 JAVA_HOME → JDK 21.0.6（用户级）；新进程实测 java -version → openjdk version "21.0.6" 2025-01-21 LTS
 ```
 
-如果 `java -version` 仍与所选版本不符，通知里会带上实际命中的 `java.exe` 路径，便于定位。
+如果 `java -version` 仍与所选版本不符，消息里会带上实际命中的 `java.exe` 路径，便于定位。
+
+### 为什么看不到 PowerShell 黑窗口
+
+执行环境变量写入要拉起 PowerShell 子进程，默认会在任务栏和屏幕上闪出一个控制台窗口。插件做了双保险：
+
+1. Node 侧 `execFileSync(..., { windowsHide: true })`；
+2. PowerShell 参数与 `Start-Process` 都带 `-WindowStyle Hidden` —— 提权场景尤其需要后者：UAC 授权后新创建的进程只有收到 `-WindowStyle Hidden` 才会把自己的控制台窗口藏起来，只靠 Node 侧参数压不住。
+
+### 结果提示框是怎么在插件退出后存活下来的
+
+切换成功后插件会调用 `utools.outPlugin()` 退出，但提示框还在。依据（读本机 uTools 7.8.0 客户端源码确认）：`outPlugin` 的实现只处理**调用方自己的窗口**，不会遍历销毁该插件用 `createBrowserWindow` 创建的独立窗口。提示框是插件目录内的 `result.html`，结果数据经 URL 查询参数传入（页面用 `textContent` 以纯文本注入，不解析 HTML）；页面内 10 秒倒计时结束、点「知道了」或按任意键都会调用 `window.close()` 自行关闭。若当前 uTools 版本没有 `createBrowserWindow`，则回退为 `showNotification`。
 
 ## 为什么环境变量写完要重开终端
 

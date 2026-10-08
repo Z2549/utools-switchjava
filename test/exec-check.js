@@ -12,6 +12,8 @@
  *  3. 临时脚本必须是 UTF-8 带 BOM（PowerShell 5.1 否则按 ANSI 解析中文）
  *  4. 脚本内的注册表键常量必须正确（HKLM 的键不在 HKLM\Environment）
  *  5. 操作结果要留在列表里，失败时标红且可关闭
+ *  6. 成功路径弹结果提示框（createBrowserWindow），弹窗后插件退出；旧版无此 API 时回退通知
+ *  7. 提权链路 PowerShell 窗口必须隐藏（-WindowStyle Hidden 双保险）
  *
  * 用法：node test/exec-check.js
  */
@@ -77,6 +79,7 @@ function regReply(args) {
 
 const spawns = []        // 记录每一次 powershell 调用
 const keptScripts = []   // 被保留下来的临时脚本路径
+let mockOpsSucceed = false // 打开后，桩替身会写出成功结果，让 performSwitch 走成功分支
 
 childProcess.execFileSync = function (file, args) {
   if (/reg\.exe$/i.test(String(file))) {
@@ -104,6 +107,24 @@ childProcess.execFileSync = function (file, args) {
     // 外层命令行由 Node 直接传给 powershell.exe，同样受 32767 限制
   }
   spawns.push(record)
+
+  // 模拟脚本执行成功：找到结果文件路径并写出成功载荷，
+  // 让 performSwitch 走到成功分支（弹提示框 → 退出插件）
+  if (record.scriptFile && mockOpsSucceed && fs.existsSync(record.scriptFile)) {
+    const text = fs.readFileSync(record.scriptFile, 'utf8')
+    const rm = /-LiteralPath '([^']+\.json)'/.exec(text)
+    if (rm) {
+      const payload = {
+        ok: true,
+        messages: ['(mock) JAVA_HOME 已写入', '(mock) PATH 已处理'],
+        verify: {
+          firstJava: 'C:\\Program Files\\Java\\jdk-21\\bin\\java.exe',
+          javaVersion: 'openjdk version "21.0.0" 2023-09-19',
+        },
+      }
+      fs.writeFileSync(rm[1], JSON.stringify(payload), 'utf8')
+    }
+  }
   return Buffer.from('')
 }
 
@@ -121,7 +142,7 @@ fs.unlinkSync = function (target) {
 /* ------------------------------------------------------------------ *
  * 启动 preload（每个场景都需要干净的快照缓存，故按场景重新加载）
  * ------------------------------------------------------------------ */
-function loadPlugin(scope) {
+function loadPlugin(scope, withDialog) {
   const store = new Map()
   store.set('switchjava/scope', scope)
   store.set('switchjava/manual', [])
@@ -140,7 +161,17 @@ function loadPlugin(scope) {
   }
   global.utools = utoolsMock
   global.window = {
-    utools: { hideMainWindow: () => {}, outPlugin: () => (utoolsMock.outPluginCalled = true) },
+    utools: {
+      hideMainWindow: () => {},
+      outPlugin: () => (utoolsMock.outPluginCalled = true),
+      // 旧版 uTools 没有该 API；undefined 走通知回退
+      createBrowserWindow: withDialog
+        ? (url, options) => {
+            utoolsMock.dialog = { url: String(url), options: options }
+            return { show: () => {} }
+          }
+        : undefined,
+    },
   }
 
   delete require.cache[require.resolve(path.join(REPO, 'preload.js'))]
@@ -181,6 +212,10 @@ console.log('===== 场景一：用户级切换不得提权 =====')
   check(spawns.length > 0, '确实发起了 powershell 调用', spawns.length + ' 次')
   const call = spawns[0]
   check(call && !call.elevated, '用户级切换不提权（不弹 UAC）')
+  check(
+    call && call.args.indexOf('-WindowStyle') >= 0 && call.args[call.args.indexOf('-WindowStyle') + 1] === 'Hidden',
+    '非提权进程也带 -WindowStyle Hidden（不弹黑窗）'
+  )
   check(call && call.cmdline < WIN_CMDLINE_LIMIT, '命令行未超 32767', (call ? call.cmdline : 0) + ' 字符')
 
   const script = call && call.scriptFile ? readScript(call.scriptFile) : null
@@ -214,6 +249,10 @@ console.log('===== 场景二：提权链路必须能被启动 =====')
     (call ? (call.outer || '').length : 0) + ' 字符'
   )
   check(!!call && /exit 1223/.test(call.outer || ''), '取消 UAC 时回传 1223 以便识别')
+  check(
+    !!call && /-Verb RunAs -WindowStyle Hidden/.test(call.outer || ''),
+    '提权进程带 -WindowStyle Hidden（不弹黑窗）'
+  )
 
   const script = call && call.scriptFile ? readScript(call.scriptFile) : null
   check(
@@ -257,6 +296,44 @@ console.log('===== 场景三：执行结果显示在列表里 =====')
     !!after && !after.some((i) => i._kind === 'dismissResult'),
     '回车可以关闭该提示'
   )
+}
+
+/* ================================================================== *
+ * 场景四：成功后弹结果提示框（弹窗必须在插件退出后仍能存活）
+ * ================================================================== */
+console.log('')
+console.log('===== 场景四：成功后弹结果提示框 =====')
+{
+  spawns.length = 0
+  mockOpsSucceed = true
+  const { api, utools } = loadPlugin('User', true)
+
+  api.args.select({}, { _kind: 'jdk', _path: 'C:\\Program Files\\Java\\jdk-21', _label: 'JDK 21' }, () => {})
+
+  check(!!utools.dialog, '成功路径调用了 createBrowserWindow 弹提示框')
+  if (utools.dialog) {
+    check(utools.dialog.url.indexOf('result.html?') === 0, '弹窗指向插件目录内的 result.html', utools.dialog.url.slice(0, 40) + '…')
+    const query = new URLSearchParams(utools.dialog.url.split('?')[1])
+    check(query.get('ok') === '1', '查询参数携带成功标记')
+    check(
+      /实测 java -version/.test(query.get('msg') || ''),
+      '消息里带真实 java -version 结果',
+      query.get('msg') || ''
+    )
+    check(utools.dialog.options.alwaysOnTop === true && utools.dialog.options.center === true, '窗口置顶且居中')
+    check(utools.dialog.options.frame === undefined || utools.dialog.options.frame === false, '无系统边框（自绘样式）')
+  }
+  check(utools.outPluginCalled === true, '弹窗后插件正常退出（独立窗口不随插件销毁）')
+  check(!utools.lastNotify, '弹窗成功时不再走通知回退')
+
+  // result.html 自身的关键约束
+  const html = fs.readFileSync(path.join(REPO, 'result.html'), 'utf8')
+  check(/charset="?utf-8"?/i.test(html), 'result.html 声明 UTF-8（消息含中文）')
+  check(html.indexOf('window.close()') >= 0, '页面可自行关闭（自动关闭/按钮）')
+  check(html.indexOf('textContent') >= 0, '消息以纯文本注入，不被当作 HTML 解析')
+  check(/URLSearchParams/.test(html), '页面从 ?query 读取结果数据')
+
+  mockOpsSucceed = false
 }
 
 /* ================================================================== *
