@@ -70,6 +70,17 @@ function tempDir() {
 }
 
 /**
+ * 上一次操作的结果，直接显示在列表顶部。
+ * 通知（showNotification）一闪而过、失败时容易被忽略，用户往往"不知道有没有生效"，
+ * 所以把结果留在列表里，失败时还会标红。
+ */
+let lastResult = null
+
+function rememberResult(ok, text) {
+  lastResult = { ok: !!ok, text: String(text) }
+}
+
+/**
  * reg.exe / 控制台程序的输出按系统 ANSI 代码页编码（简中为 GBK）。
  * 先判断是否含高位字节，再选择 UTF-8 或 GBK 解码，避免中文路径乱码。
  */
@@ -848,44 +859,61 @@ function normalizeMessages(value) {
 }
 
 /**
+ * 把脚本落成 .ps1 临时文件。
+ * 必须带 UTF-8 BOM：PowerShell 5.1 看不到 BOM 时会按 ANSI 解析，脚本里的中文全部乱码。
+ */
+function writeScriptFile(script, stamp) {
+  const file = path.join(tempDir(), 'switchjava-' + stamp + '.ps1')
+  const bom = Buffer.from([0xef, 0xbb, 0xbf])
+  fs.writeFileSync(file, Buffer.concat([bom, Buffer.from(String(script), 'utf8')]))
+  return file
+}
+
+/**
  * 运行一组操作。
  * 需要写入系统级环境变量（或需要清理系统级 JAVA_HOME）时自动提权，UAC 只弹一次。
+ *
+ * ⚠ 曾经的致命缺陷：提权时把整段脚本 base64 之后再套一层 base64 塞进 -EncodedCommand，
+ * 外层命令行因此膨胀到约 59000 字符，远超 Windows 的 32767 上限，
+ * 子进程根本无法启动（Node 侧直接 spawn 失败）。现象就是"点修复没反应、切换也失败"。
+ * 现在改为把脚本写成临时 .ps1，外层只负责用 -File 拉起它，
+ * 命令行长度与脚本规模彻底解耦（外层只剩约 700 字符）。
  */
 function runOps(ops, ctx) {
-  const resultFile = path.join(
-    tempDir(),
-    'switchjava-' + process.pid + '-' + Date.now() + '.json'
-  )
-  const script = buildOpsScript(ops, ctx, resultFile)
-  const innerArgs = [
-    '-NoProfile',
-    '-NonInteractive',
-    '-ExecutionPolicy',
-    'Bypass',
-    '-EncodedCommand',
-    toBase64Utf16(script),
-  ]
+  const stamp = process.pid + '-' + Date.now()
+  const resultFile = path.join(tempDir(), 'switchjava-' + stamp + '.json')
+  const scriptFile = writeScriptFile(buildOpsScript(ops, ctx, resultFile), stamp)
 
   const needsElevation =
     ctx.scope === SCOPE_MACHINE ||
     ops.some((op) => /:Machine$/.test(op)) ||
     (ctx.scope === SCOPE_USER && ops.indexOf('removeOtherJavaHome') >= 0)
 
+  const commonArgs = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass']
+
   let launchError = null
   try {
     if (needsElevation) {
-      const outerScript =
-        'Start-Process -FilePath ' +
-        psQuote(PS_EXE) +
-        ' -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList ' +
-        innerArgs.map(psQuote).join(', ')
-      execFileSync(PS_EXE, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', toBase64Utf16(outerScript)], {
+      // 外层脚本自身很短，走 -EncodedCommand 只为杜绝引号注入；
+      // 真正的逻辑脚本通过 -File 交给管理员进程执行。
+      const outerScript = [
+        'try {',
+        '  $p = Start-Process -FilePath ' +
+          psQuote(PS_EXE) +
+          " -Verb RunAs -PassThru -Wait -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File'," +
+          psQuote(scriptFile),
+        '  exit [int]$p.ExitCode',
+        '} catch {',
+        '  exit 1223',
+        '}',
+      ].join('\n')
+      execFileSync(PS_EXE, commonArgs.concat(['-EncodedCommand', toBase64Utf16(outerScript)]), {
         timeout: ELEVATE_TIMEOUT,
         windowsHide: true,
         stdio: 'pipe',
       })
     } else {
-      execFileSync(PS_EXE, innerArgs, {
+      execFileSync(PS_EXE, commonArgs.concat(['-File', scriptFile]), {
         timeout: EXEC_TIMEOUT,
         windowsHide: true,
         stdio: 'pipe',
@@ -893,6 +921,12 @@ function runOps(ops, ctx) {
     }
   } catch (err) {
     launchError = err
+  } finally {
+    try {
+      fs.unlinkSync(scriptFile)
+    } catch (err) {
+      /* 临时脚本清理失败可忽略 */
+    }
   }
 
   let payload = null
@@ -918,13 +952,14 @@ function runOps(ops, ctx) {
 
   if (launchError) {
     const detail = (bufferToText(launchError.stderr) + ' ' + String(launchError.message || '')).trim()
-    if (/取消|cancell?ed|0x800704c7/i.test(detail)) {
-      return { ok: false, cancelled: true, messages: ['已取消管理员授权'] }
+    // 1223 = ERROR_CANCELLED：用户在 UAC 对话框点了「否」
+    if (launchError.status === 1223 || /取消|cancell?ed|0x800704c7/i.test(detail)) {
+      return { ok: false, cancelled: true, messages: ['已取消管理员授权，未做任何修改'] }
     }
     return { ok: false, messages: ['执行失败：' + detail] }
   }
 
-  return { ok: false, messages: ['未取得执行结果，可能被安全软件拦截'] }
+  return { ok: false, messages: ['未取得执行结果（脚本没写出结果文件，可能被安全软件拦截）'] }
 }
 
 /* ================================================================== *
@@ -945,14 +980,24 @@ function formatResult(prefix, result) {
   return text
 }
 
-function performSwitch(jdk) {
+/** 从 `openjdk version "21.0.6" ...` 这类文本取主版本号（Java 8 时代写作 1.8.0_x → 8） */
+function versionMajorFromText(text) {
+  const match = /version\s+"([0-9][0-9._]*)"/i.exec(String(text || ''))
+  if (!match) return ''
+  const parts = match[1].split(/[._]/)
+  return parts[0] === '1' && parts.length > 1 ? parts[1] : parts[0]
+}
+
+function performSwitch(jdk, callbackSetList) {
   const scope = getScope()
   const snapshot = getSnapshot(false)
   const ops = []
 
-  // 只在真正需要时才修复，并指向"卡住"的那个作用域（很可能在系统 PATH）
-  if (getAutoFixPath()) {
-    for (const target of snapshot.repairScopes) ops.push('fixPath:' + target)
+  // 只修「当前作用域」里的 PATH。写用户级 PATH 不需要管理员，常规切换因此保持
+  // 免 UAC、瞬时完成；系统 PATH 里的抢占项（javapath）交给列表里那个显式修复项。
+  // 不能把提权捆绑进切换：一旦用户在 UAC 上点「否」，连 JAVA_HOME 都写不进去。
+  if (getAutoFixPath() && snapshot.repairScopes.indexOf(scope) >= 0) {
+    ops.push('fixPath:' + scope)
   }
   ops.push('setJavaHome')
 
@@ -966,26 +1011,53 @@ function performSwitch(jdk) {
   invalidateSnapshot()
 
   if (!result.ok) {
-    notify('切换失败：' + result.messages.join('；'))
-  } else {
-    let message = 'JAVA_HOME → ' + (jdk.label || jdk.path) + '（' + scopeLabel(scope) + '）'
-    // JAVA_HOME 是普通变量：同名的用户级变量会覆盖系统级。所以只有写系统级时，
-    // 才可能被已有的用户级值盖掉；写用户级是能盖住系统级的，不该报警。
-    if (scope === SCOPE_MACHINE) {
-      const userValue = queryEnvVar(SCOPE_USER, 'JAVA_HOME')
-      if (userValue && !samePath(userValue, jdk.path)) {
-        message += '；注意：用户级 JAVA_HOME=' + userValue + ' 优先级更高，会让本次系统级设置失效'
-      }
+    const text = '切换失败：' + result.messages.join('；')
+    rememberResult(false, text)
+    notify(text)
+    // 失败时不要急着退出：把结果留在列表里，用户才能看清到底发生了什么
+    if (typeof callbackSetList === 'function') {
+      refresh(callbackSetList)
+      return
     }
-    const verify = result.verify
-    if (verify && verify.javaVersion) {
-      message += '；新进程实测 java -version → ' + verify.javaVersion
-    } else if (verify && verify.firstJava) {
-      message += '；java 将命中 ' + verify.firstJava
-    }
-    notify(message + '。已打开的终端需重开才生效。')
+    window.utools.outPlugin()
+    return
   }
 
+  let message = 'JAVA_HOME → ' + (jdk.label || jdk.path) + '（' + scopeLabel(scope) + '）'
+  // JAVA_HOME 是普通变量：同名的用户级变量会覆盖系统级。所以只有写系统级时，
+  // 才可能被已有的用户级值盖掉；写用户级是能盖住系统级的，不该报警。
+  if (scope === SCOPE_MACHINE) {
+    const userValue = queryEnvVar(SCOPE_USER, 'JAVA_HOME')
+    if (userValue && !samePath(userValue, jdk.path)) {
+      message += '；注意：用户级 JAVA_HOME=' + userValue + ' 优先级更高，会让本次系统级设置失效'
+    }
+  }
+
+  const verify = result.verify || {}
+  if (verify.javaVersion) {
+    message += '；新进程实测 java -version → ' + verify.javaVersion
+    const actualMajor = versionMajorFromText(verify.javaVersion)
+    if (jdk.major && actualMajor && actualMajor !== jdk.major) {
+      message += '（注意：与所选 JDK ' + jdk.major + ' 不一致）'
+    }
+  } else if (verify.firstJava) {
+    message += '；java 将命中 ' + verify.firstJava
+  }
+
+  // 真正卡住 java 的抢占项在「另一个」作用域时，必须说清楚，
+  // 否则用户只会看到"切换了却没变化"，这正是本次要解决的困惑。
+  const remaining = snapshot.repairScopes.filter((item) => item !== scope)
+  if (remaining.length > 0) {
+    message +=
+      '；⚠ ' +
+      remaining.map(scopeLabel).join('、') +
+      ' PATH 里仍有会抢先的 java 目录，需点击列表中的「⚠ 修复 PATH 抢占（改' +
+      remaining.map(scopeLabel).join(' 与 ') +
+      '）」（需管理员）'
+  }
+
+  rememberResult(true, message)
+  notify(message + '。已打开的终端需重开才生效。')
   window.utools.outPlugin()
 }
 
@@ -1038,14 +1110,20 @@ function runFixPath() {
   const ops = scopes.map((target) => 'fixPath:' + target)
   const result = runOps(ops, { scope: getScope(), target: '' })
   invalidateSnapshot()
-  notify(formatResult('PATH 修复', result))
+  const text = formatResult('PATH 修复', result)
+  rememberResult(result.ok, text)
+  notify(text)
 }
 
 function runRemoveOtherJavaHome() {
   const scope = getScope()
   const result = runOps(['removeOtherJavaHome'], { scope: scope, target: '' })
   invalidateSnapshot()
-  notify(result.ok ? result.messages.join('；') : '清理失败：' + result.messages.join('；'))
+  const text = result.ok
+    ? '清理完成 — ' + result.messages.join('；')
+    : '清理失败：' + result.messages.join('；')
+  rememberResult(result.ok, text)
+  notify(text)
 }
 
 /* ================================================================== *
@@ -1157,6 +1235,18 @@ function buildListItems(keyword) {
   }
 
   const visible = jdkItems.filter(matches).concat(actionItems.filter(matches))
+
+  // 把上一次操作的结果顶到最前（失败时标红），让"到底有没有生效"一眼可见
+  if (kw === '' && lastResult) {
+    visible.unshift({
+      title: lastResult.ok ? '✔ 上次操作成功' : '✖ 上次操作失败（回车可关闭此提示）',
+      description: lastResult.text,
+      icon: '',
+      _kind: 'dismissResult',
+      _fix: !lastResult.ok,
+      _search: '上次 结果 状态 日志 last result',
+    })
+  }
 
   if (kw === '' && snapshot.jdks.length === 0) {
     visible.unshift({
@@ -1375,6 +1465,12 @@ window.exports = {
       select: (action, itemData, callbackSetList) => {
         const kind = itemData && itemData._kind
 
+        if (kind === 'dismissResult') {
+          lastResult = null
+          refresh(callbackSetList)
+          return
+        }
+
         if (kind === 'jdk') {
           const snapshot = getSnapshot(false)
           const jdk = snapshot.jdks.find((item) => samePath(item.path, itemData._path))
@@ -1384,7 +1480,7 @@ window.exports = {
             refresh(callbackSetList)
             return
           }
-          performSwitch(jdk)
+          performSwitch(jdk, callbackSetList)
           return
         }
 
