@@ -20,8 +20,9 @@
 - **写入范围可选**：
   - 用户级（默认）：免管理员，只对当前用户生效，改完立即可用；
   - 系统级：弹一次 UAC，对全部用户生效。
-- **自动修复 PATH**：确保 `%JAVA_HOME%\bin` 位于 **PATH 最前**，避免被 Oracle 的 `javapath` 抢先（详见下文）。
-- **诊断项**（按需出现）：PATH 缺失条目、被其他 java 目录抢先、两个作用域中互相冲突的 `JAVA_HOME`、当前 `JAVA_HOME` 是无效的间接引用。
+- **自动修复 PATH**：判断哪个作用域在真正卡住你，把 `%JAVA_HOME%\bin` 前置到**那个作用域**的最前面（可能是**系统** PATH，此时弹一次 UAC），避免被 Oracle 的 `javapath` 抢先（详见下文）。
+- **诊断项**（按需出现）：PATH 被其他 java 目录抢先（含在**另一个作用域**里抢先的情形）、PATH 缺少 `%JAVA_HOME%\bin`、两个作用域中互相冲突的 `JAVA_HOME`、当前 `JAVA_HOME` 是无效的间接引用。
+- **写入后自检**：每次写入都「写 → 回读比对 → 实跑一次 `java -version`」，把真实版本号写进通知，不再有「不知道到底成没成功」。
 - **修复类条目红色高亮**：凡是「点一下就能修好」的诊断项，标题与说明会显示为红色并带左侧红条，与普通选项一眼区分（实现原理见下文）。
 - 直接输入版本号即可切换：在 uTools 搜索框输入 `8` / `11` / `17` / `21` 等，选择「按版本号切换 Java」即完成，无需进入列表。
 
@@ -47,8 +48,8 @@
   ⚙ 写入范围：用户级             点击切换为「系统级」：需 UAC，对全部用户生效
   ＋ 手动添加 JDK 目录            扫描不到时手动指定 JDK 根目录
   ⟳ 重新扫描本机 JDK             忽略缓存立即重新扫描
-  ☑ 切换时自动修复 PATH          确保 %JAVA_HOME%\bin 位于 PATH 最前
-  ⚠ 修复 PATH                    ← 修复类条目：红色标题 + 左侧红条
+  ☑ 切换时自动修复 PATH          只在抢占确实存在时修复对应作用域
+  ⚠ 修复 PATH 抢占（改系统级）     ← 修复类条目：红色标题 + 左侧红条
 ```
 
 选中某个版本后按回车即可完成切换。子输入框中可输入版本号或厂商名进行筛选。
@@ -85,22 +86,48 @@ createElement('div', { className: 'list-item-description' }, item.description)
 因此本插件在切换时会（可在列表中关闭）：
 
 1. 读取 PATH 的**原始未展开值**（避免 PowerShell 展开 `%VAR%` 导致 PATH 被写坏）；
-2. 若 `%JAVA_HOME%\bin` 不存在，则把它**插到最前**；
-3. 以 `REG_EXPAND_SZ` 类型写回，保证 `%JAVA_HOME%` 能被系统展开。
+2. 判断**哪个作用域在真正卡住你** —— 也就是哪个 PATH 里存在排在 `%JAVA_HOME%\bin` 之前、且自带 `java.exe` 的目录；
+3. 把 `%JAVA_HOME%\bin` **插到那个作用域的最前面**（若在系统 PATH，会弹一次 UAC）；
+4. 以 `REG_EXPAND_SZ` 类型写回，保证 `%JAVA_HOME%` 能被系统展开。
 
-该操作是幂等的：重复执行不会改变已有内容，也不会移除 PATH 中的其他条目。
+该操作是幂等的：重复执行不会改变已有内容，也不会移除 PATH 中的其他条目（`javapath` 只是被排到后面，不会被删掉）。
 
-> **⚠️ 已知局限（尚未修复）**：Windows 合并 PATH 时是 **系统 PATH 在前、用户 PATH 追加在后**（同名目录保留靠前的那份）。这意味着如果 `javapath` 位于**系统** PATH，而 `%JAVA_HOME%\bin` 只加在**用户** PATH，前者永远胜出——用户级的「修复 PATH」在这种情况下看不出效果。
->
-> 本机实测即为此情形：用户 PATH 第 0 项已是 `%JAVA_HOME%\bin`，但 `where java` 仍解析到 `C:\Program Files\Common Files\Oracle\Java\javapath\java.exe`，因为该目录在系统 PATH 中。
->
-> 彻底解决需要把 `%JAVA_HOME%\bin` 前置到**系统** PATH（需 UAC），或在系统 PATH 中移除 `javapath`。
+### 为什么修复目标必须看「系统 PATH」
+
+Windows 合并 PATH 的顺序是 **系统 PATH 在前 + 用户 PATH 追加在后**。本机用 `CreateEnvironmentBlock` 取到的合并结果：
+
+```
+  [ 3] C:\Program Files\Common Files\Oracle\Java\javapath   ← 抢占项，在系统 PATH 里
+  [11] C:\Program Files\Git\cmd                             ← 机器独有项
+  [12] C:\Program Files\Java\jdk-17.0.3.1\bin               ← 用户 PATH 的 %JAVA_HOME%\bin 展开而来
+  [13] C:\Program Files (x86)\pcsuite\                      ← 用户独有项
+```
+
+机器独有项（索引 11）排在用户独有项（索引 13）之前 —— 这就是「系统 PATH 在前」的直接证据。
+
+所以当 `javapath` 位于**系统** PATH 时，只在**用户** PATH 里前置 `%JAVA_HOME%\bin` 是徒劳的；插件会把修复目标自动定为系统 PATH（这也解释了此前的「点了修复却没变化」，其根因还有一处：提权脚本误用了不存在的 `HKLM\Environment` 键，已修正为 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`）。
+
+修复一次之后就不用再管：系统 PATH 里的 `%JAVA_HOME%` 同样会用**合并后**的 JAVA_HOME 展开（用户级覆盖系统级），所以之后无论写用户级还是系统级，`java` 都会跟着变。
+
+### 写入后如何确认
+
+每次写入都会「写 → 回读比对 → 实跑一次 `java -version`」，结果直接显示在通知里，例如：
+
+```
+JAVA_HOME → JDK 21.0.6（用户级）；新进程实测 java -version → openjdk version "21.0.6" 2025-01-21 LTS
+```
+
+如果 `java -version` 仍与所选版本不符，通知里会带上实际命中的 `java.exe` 路径，便于定位。
 
 ## 为什么环境变量写完要重开终端
 
-Windows 的进程环境块是进程启动时复制的一份快照。修改注册表后，**已经运行**的终端 / IDE / 编辑器不会自动更新，需要重启这些程序；新启动的进程才会读到新值。
+Windows 的进程环境块是进程启动时复制的一份快照。修改注册表后，**已经运行**的终端 / IDE / 编辑器不会自动更新。
 
-插件在写入后会广播环境变更通知，`explorer.exe` 重新读取后，从桌面 / 开始菜单新启动的程序通常能立即拿到新值。
+插件在写入后会显式广播 `WM_SETTINGCHANGE`（`lParam = "Environment"`），让资源管理器等已运行的进程重新读取环境块。这一步是必要的：直接写注册表（.NET `RegistryKey.SetValue`、`[Environment]::SetEnvironmentVariable`）**不会**自动广播，只有 `setx.exe` 会。少了它，「新开的窗口仍是旧值」就会频频出现。
+
+即便如此，**已经打开的终端窗口永远不会刷新**（它继承的是自己启动时的环境块），在旧终端里再敲 `cmd` 也只是继承同一个旧块。所以请**新开**一个终端窗口（从开始菜单 / 桌面 / 任务栏）。
+
+或者直接看 uTools 通知末尾的 `java -version` 实测值 —— 插件是在**独立进程**里按最新注册表重新拼出合并 PATH 后再运行的，不依赖任何窗口刷新，因此它就是「新进程会看到什么」的权威答案。
 
 ## 从 v1 迁移
 
@@ -127,14 +154,15 @@ node test/list-style-check.js   # 在 jsdom 里复刻客户端列表 DOM，验�
 
 `test/local-check.js` 会 mock 掉 `utools` 对象，直接调起 `enter` / `search` 回调并打印生成的列表，用于确认 JDK 扫描与过滤是否正常。
 
-`test/list-style-check.js` 需要 `jsdom`（`npm i -D jsdom`，或设置 `NODE_PATH` 指向已安装目录）。它把 `reg.exe` 的查询结果替换成脚本自己构造的桩，因此环境变量场景完全可控，断言与本机装了什么无关。覆盖：标记与 `_fix` 标志一一对应、React 重写 `className` 后标记自动补回、列表切换不残留标记、`onPluginOut` 撤销标记、`title` 内嵌 HTML 不被解析、跨作用域冲突的判定方向。
+`test/list-style-check.js` 需要 `jsdom`（`npm i -D jsdom`，或设置 `NODE_PATH` 指向已安装目录）。它把 `reg.exe` 的查询结果替换成脚本自己构造的桩，因此环境变量场景完全可控，断言与本机装了什么无关。覆盖：标记与 `_fix` 标志一一对应、React 重写 `className` 后标记自动补回、列表切换不残留标记、`onPluginOut` 撤销标记、`title` 内嵌 HTML 不被解析、跨作用域冲突的判定方向、以及**修复目标是否落在真正抢先的那个作用域**（场景 A 即复刻「抢占项在系统 PATH」这一真实情形）。
 
 ## 已知限制
 
 - 仅支持 Windows（`plugin.json` 已声明 `platform: ["win32"]`，运行时也会二次校验）。
 - 写入系统级环境变量必须获得管理员权限；取消 UAC 会得到明确提示，不会静默失败。
 - **`JAVA_HOME` 的作用域优先级**：它是普通变量，同名的**用户级变量会覆盖系统级变量**。所以「写系统级 + 用户级已有值」会让本次设置失效，插件会红字提示并支持一键清除；反过来「写用户级」是能盖住系统级的，不算冲突，不会报警。
-- **PATH 是拼接而非覆盖，且系统 PATH 在前**：用户级 PATH 里的前置项压不过系统 PATH 中靠前的同名程序（详见上文「已知局限」）。
+- **PATH 是拼接而非覆盖，且系统 PATH 在前**：该顺序由插件自动识别，并把 `%JAVA_HOME%\bin` 前置到**真正卡住的那个作用域**（可能是系统 PATH，需 UAC）。列表里的红字项会写明修复目标。
+- 修复只做「重排」，不会删除 `javapath` 等条目。若你想彻底移除它，请在「系统变量」里自行删除。
 - 红色高亮依赖 uTools 列表组件的内部 DOM 结构（类名 `list-item` / `list-item-title`）。若未来版本改结构，最坏情况只是高亮失效，条目仍带有 `⚠` 前缀。
 - `description.png` 为 v1 时期的手工配置说明图，与 v2 无关，保留仅作历史记录。
 

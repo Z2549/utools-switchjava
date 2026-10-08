@@ -484,6 +484,58 @@ function invalidateSnapshot() {
   snapshotCache = { at: 0, data: null }
 }
 
+/**
+ * 分析某一作用域 PATH 的原始文本。
+ *   known   —— 是否成功读到该作用域的 Path
+ *   hasEntry—— 是否包含 %JAVA_HOME%\bin
+ *   shadow  —— 排在 %JAVA_HOME%\bin 之前、且自身能提供 java.exe 的目录（典型是 Oracle javapath）
+ */
+function analysePath(rawPath) {
+  if (rawPath === null || rawPath === undefined) {
+    return { known: false, hasEntry: false, shadow: null }
+  }
+  return {
+    known: true,
+    hasEntry: hasJavaHomeEntryInPath(rawPath),
+    shadow: findShadowingJavaEntry(rawPath),
+  }
+}
+
+/**
+ * 判断哪些作用域的 PATH 需要修复。
+ *
+ * 关键事实（本机实测确认）：Windows 合并 PATH 时【系统 PATH 在前、用户 PATH 追加在后】。
+ * 因此系统 PATH 里的 javapath 永远排在用户 PATH 的 %JAVA_HOME%\bin 之前 —— 只修用户 PATH
+ * 是徒劳的，必须修系统 PATH。这正是"点了修复却没变化"的根本原因。
+ */
+function computeRepairScopes(machineInfo, userInfo) {
+  // 两个作用域都读不到就别猜：宁可不说，也不要报假警
+  if (!machineInfo.known && !userInfo.known) return []
+  if (machineInfo.shadow) return [SCOPE_MACHINE]
+  if (machineInfo.known && machineInfo.hasEntry) return []
+  if (userInfo.shadow) return [SCOPE_USER]
+  if (userInfo.hasEntry) return []
+  return [SCOPE_USER]
+}
+
+function describeRepair(machineInfo, userInfo, scopes) {
+  if (scopes.length === 0) return ''
+  const blockers = []
+  if (machineInfo.shadow) blockers.push('系统 PATH 的 ' + machineInfo.shadow)
+  else if (userInfo.shadow) blockers.push('用户 PATH 的 ' + userInfo.shadow)
+
+  let text
+  if (blockers.length > 0) {
+    text =
+      blockers.join('、') +
+      ' 排在 %JAVA_HOME%\\bin 前面，且它不读 JAVA_HOME，所以 java -version 不会跟着切换变；点击修复'
+  } else {
+    text = 'PATH 里没有 %JAVA_HOME%\\bin，java 不会跟随 JAVA_HOME 变化；点击修复'
+  }
+  if (scopes.indexOf(SCOPE_MACHINE) >= 0) text += '（需管理员，弹一次 UAC）'
+  return text
+}
+
 function buildSnapshot() {
   const jdks = scanJdks()
   const scope = getScope()
@@ -494,9 +546,9 @@ function buildSnapshot() {
   const activeIsIndirect = /%[A-Za-z0-9_]+%/.test(activePath)
 
   // PATH 必须从注册表读取：插件进程的环境块是启动时的快照，不会反映最新写入
-  const rawPath = queryRawPath(scope)
-  const shadowingEntry = findShadowingJavaEntry(rawPath)
-  const pathHasEntry = rawPath === null ? false : hasJavaHomeEntryInPath(rawPath)
+  const machineInfo = analysePath(queryRawPath(SCOPE_MACHINE))
+  const userInfo = analysePath(queryRawPath(SCOPE_USER))
+  const repairScopes = computeRepairScopes(machineInfo, userInfo)
 
   return {
     jdks: jdks,
@@ -506,8 +558,10 @@ function buildSnapshot() {
     activeIsIndirect: activeIsIndirect,
     scope: scope,
     autoPath: getAutoFixPath(),
-    pathHasEntry: pathHasEntry,
-    shadowingEntry: shadowingEntry,
+    machineInfo: machineInfo,
+    userInfo: userInfo,
+    repairScopes: repairScopes,
+    fixDescription: describeRepair(machineInfo, userInfo, repairScopes),
     at: Date.now(),
   }
 }
@@ -586,37 +640,123 @@ $ops    = @(${opList})
 
 function Add-Msg([string]$m) { [void]$messages.Add($m) }
 
+function Get-PathFirstEntry([string]$s) {
+  $parts = @($s -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+  if ($parts.Count -eq 0) { return '' }
+  return [string]$parts[0]
+}
+
+# PATH 里的 %VAR% 会用「合并后」的变量表展开（系统值被用户值覆盖）
+function Expand-EnvText([string]$text, $map) {
+  if ($text -eq '') { return '' }
+  $guard = 0
+  while ($guard -lt 20) {
+    $guard++
+    $m = [regex]::Match($text, '%([A-Za-z0-9_()]+)%')
+    if (-not $m.Success) { break }
+    $name = $m.Groups[1].Value.ToLower()
+    if (-not $map.ContainsKey($name)) { break }
+    $val = [string]$map[$name]
+    if ($val -eq '') { break }
+    $text = $text.Substring(0, $m.Index) + $val + $text.Substring($m.Index + $m.Length)
+  }
+  return $text
+}
+
+function Get-MergedVarMap {
+  $map = @{}
+  foreach ($s in @('Machine', 'User')) {
+    $k = Open-EnvKeyRead $s
+    if ($k -eq $null) { continue }
+    try {
+      foreach ($n in $k.GetValueNames()) {
+        if ($n -eq '') { continue }
+        $map[$n.ToLower()] = [string]$k.GetValue($n, '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+      }
+    } finally { $k.Close() }
+  }
+  return $map
+}
+
+# 本机实测确认：合并 PATH = 系统 PATH 在前 + 用户 PATH 追加在后
+function Get-MergedPathText {
+  $map = Get-MergedVarMap
+  $m = Expand-EnvText ([string](Get-RawEnvValue 'Machine' 'Path')) $map
+  $u = Expand-EnvText ([string](Get-RawEnvValue 'User' 'Path')) $map
+  $parts = @()
+  if ($m -ne '') { $parts += $m }
+  if ($u -ne '') { $parts += $u }
+  return ($parts -join ';')
+}
+
+# 注意：HKLM 的环境变量不在 'HKLM\Environment'，而在 Session Manager 之下。
+# 这里曾写成 OpenSubKey('Environment')，返回 $null，导致系统级修复 100% 失败。
+$kUser = 'Environment'
+$kMachine = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+
 function Open-EnvKey([string]$s) {
-  if ($s -eq 'User') { return [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true) }
-  return [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('Environment', $true)
+  if ($s -eq 'User') { return [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($kUser, $true) }
+  return [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($kMachine, $true)
+}
+
+function Open-EnvKeyRead([string]$s) {
+  if ($s -eq 'User') { return [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($kUser, $false) }
+  return [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($kMachine, $false)
+}
+
+function Get-EnvKeyLabel([string]$s) {
+  if ($s -eq 'User') { return 'HKCU\' + $kUser }
+  return 'HKLM\' + $kMachine
+}
+
+function Get-RawEnvValue([string]$s, [string]$name) {
+  $k = Open-EnvKeyRead $s
+  if ($k -eq $null) { return '' }
+  try { return [string]$k.GetValue($name, '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } finally { $k.Close() }
 }
 
 foreach ($op in $ops) {
+  $opName = [string]$op
+  $opArg = ''
+  $sep = $opName.IndexOf(':')
+  if ($sep -ge 0) { $opArg = $opName.Substring($sep + 1); $opName = $opName.Substring(0, $sep) }
   try {
-    switch ($op) {
+    switch ($opName) {
       'fixPath' {
-        $key = Open-EnvKey $scope
-        if ($key -eq $null) { throw ('无法打开 ' + $scope + ' 范围的环境变量注册表键') }
+        $fixScope = if ($opArg -ne '') { $opArg } else { $scope }
+        $key = Open-EnvKey $fixScope
+        if ($key -eq $null) { throw ('无法打开注册表键 ' + (Get-EnvKeyLabel $fixScope)) }
         $raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
         $entry = '%JAVA_HOME%\bin'
         $parts = @($raw -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' -and $_ -ine $entry -and $_ -ine '%JAVA_HOME%/bin' })
+        $first = ''
+        if ($parts.Count -gt 0) { $first = [string]$parts[0] }
         $newPath = (@($entry) + $parts) -join ';'
-        if ($newPath -ne $raw) {
-          $key.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-          Add-Msg 'PATH 已修正：%JAVA_HOME%\bin 已置于最前'
-        } else {
-          Add-Msg 'PATH 已是最优状态'
-        }
+        $key.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
         $key.Close()
+        $readBack = [string](Get-RawEnvValue $fixScope 'Path')
+        $okNow = $readBack.Trim().StartsWith($entry, [System.StringComparison]::OrdinalIgnoreCase)
+        if ($raw.Trim().StartsWith($entry, [System.StringComparison]::OrdinalIgnoreCase)) {
+          Add-Msg ((Get-EnvKeyLabel $fixScope) + ' 首项原本就是 ' + $entry + '，无需改动')
+        } elseif ($okNow) {
+          Add-Msg ((Get-EnvKeyLabel $fixScope) + ' 首项 ' + $first + ' 已替换为 ' + $entry + '（已回读确认）')
+        } else {
+          Add-Msg ((Get-EnvKeyLabel $fixScope) + ' 写入后回读异常，请检查权限')
+        }
       }
       'setJavaHome' {
         if (-not (Test-Path -LiteralPath (Join-Path $target 'bin\java.exe'))) {
           throw ('目标目录不是有效的 JDK：' + $target)
         }
-        $setx = Join-Path $env:SystemRoot 'System32\setx.exe'
-        if ($scope -eq 'User') { & $setx JAVA_HOME $target | Out-Null } else { & $setx JAVA_HOME $target /M | Out-Null }
-        if ($LASTEXITCODE -ne 0) { throw ('setx 写入失败，退出码 ' + $LASTEXITCODE) }
-        Add-Msg ('JAVA_HOME 已写入 ' + $scope + ' 范围：' + $target)
+        $key = Open-EnvKey $scope
+        if ($key -eq $null) { throw ('无法打开注册表键 ' + (Get-EnvKeyLabel $scope)) }
+        $key.SetValue('JAVA_HOME', $target, [Microsoft.Win32.RegistryValueKind]::String)
+        $key.Close()
+        $readBack = [string](Get-RawEnvValue $scope 'JAVA_HOME')
+        if (-not $readBack.Equals($target, [System.StringComparison]::OrdinalIgnoreCase)) {
+          throw ('JAVA_HOME 回读不一致：期望 ' + $target + '，实际 ' + $readBack)
+        }
+        Add-Msg ((Get-EnvKeyLabel $scope) + ' JAVA_HOME = ' + $readBack + '（已回读确认）')
       }
       'removeOtherJavaHome' {
         $key = Open-EnvKey $other
@@ -630,16 +770,74 @@ foreach ($op in $ops) {
         }
         $key.Close()
       }
-      default { throw ('未知操作：' + $op) }
+      default { throw ('未知操作：' + $opName) }
     }
   } catch {
     $ok = $false
-    Add-Msg ('[' + $op + '] ' + $_.Exception.Message)
+    Add-Msg ('[' + $opName + '] ' + $_.Exception.Message)
   }
 }
 
-$payload = [ordered]@{ ok = $ok; messages = @($messages) }
-$payload | ConvertTo-Json -Compress -Depth 4 | Set-Content -LiteralPath ${psQuote(resultFile)} -Encoding UTF8
+# 依据合并后的 PATH 推断"新开的进程会命中哪个 java.exe"，再真实跑一次 java -version 作为最终验证。
+$mergedPath = Get-MergedPathText
+$firstJava = ''
+foreach ($piece in $mergedPath.Split(';')) {
+  $e = $piece.Trim()
+  if ($e -eq '') { continue }
+  try { $cand = Join-Path $e 'java.exe' } catch { continue }
+  if (Test-Path -LiteralPath $cand) { $firstJava = $cand; break }
+}
+
+$jhUser = [string](Get-RawEnvValue 'User' 'JAVA_HOME')
+$jhMachine = [string](Get-RawEnvValue 'Machine' 'JAVA_HOME')
+$jhEffective = if ($jhUser -ne '') { $jhUser } else { $jhMachine }
+
+$javaVersion = ''
+if ($firstJava -ne '') {
+  # java -version 把版本信息写到 stderr；在外层 $ErrorActionPreference='Stop' 下，
+  # stderr 重定向会被当成终止性错误抛出来，所以这里必须先临时降级。
+  $savedEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $env:Path = $mergedPath
+    if ($jhEffective -ne '') { $env:JAVA_HOME = $jhEffective }
+    foreach ($item in @(& $firstJava -version 2>&1)) {
+      $t = ''
+      if ($item -is [System.Management.Automation.ErrorRecord]) { $t = [string]$item.Exception.Message } else { $t = [string]$item }
+      if ($t.Trim() -ne '') { $javaVersion = $t.Trim(); break }
+    }  } catch {
+    $javaVersion = ''
+  } finally {
+    $ErrorActionPreference = $savedEap
+  }
+}
+
+# .NET 直接写注册表不会广播 WM_SETTINGCHANGE，资源管理器等已运行的进程仍用旧环境块，
+# 这正是"改完在新窗口里仍是旧值"的原因之一。setx 会广播，我们手动补上同样的广播。
+try {
+  $sig = '[DllImport("user32.dll", CharSet=CharSet.Auto, SetLastError=true)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);'
+  $u32 = Add-Type -MemberDefinition $sig -Name EnvBroadcast -Namespace SwitchJava -PassThru
+  $res = [IntPtr]::Zero
+  [void]$u32::SendMessageTimeout([IntPtr]0xffff, 0x1A, [IntPtr]::Zero, 'Environment', 2, 3000, [ref]$res)
+} catch {
+  # 广播失败只影响已运行程序是否立即刷新，不影响注册表写入结果
+}
+
+$payload = [ordered]@{
+  ok = $ok
+  messages = @($messages)
+  verify = [ordered]@{
+    firstJava = $firstJava
+    javaVersion = $javaVersion
+    javaHomeUser = $jhUser
+    javaHomeMachine = $jhMachine
+    javaHomeEffective = $jhEffective
+    mergedPathLength = $mergedPath.Length
+    machinePathFirst = (Get-PathFirstEntry ([string](Get-RawEnvValue 'Machine' 'Path')))
+    userPathFirst = (Get-PathFirstEntry ([string](Get-RawEnvValue 'User' 'Path')))
+  }
+}
+$payload | ConvertTo-Json -Compress -Depth 5 | Set-Content -LiteralPath ${psQuote(resultFile)} -Encoding UTF8
 `
 }
 
@@ -670,6 +868,7 @@ function runOps(ops, ctx) {
 
   const needsElevation =
     ctx.scope === SCOPE_MACHINE ||
+    ops.some((op) => /:Machine$/.test(op)) ||
     (ctx.scope === SCOPE_USER && ops.indexOf('removeOtherJavaHome') >= 0)
 
   let launchError = null
@@ -710,7 +909,11 @@ function runOps(ops, ctx) {
   }
 
   if (payload && typeof payload === 'object') {
-    return { ok: payload.ok === true, messages: normalizeMessages(payload.messages) }
+    return {
+      ok: payload.ok === true,
+      messages: normalizeMessages(payload.messages),
+      verify: payload.verify && typeof payload.verify === 'object' ? payload.verify : null,
+    }
   }
 
   if (launchError) {
@@ -728,10 +931,29 @@ function runOps(ops, ctx) {
  * 八、业务动作
  * ================================================================== */
 
+function formatResult(prefix, result) {
+  if (!result.ok) return prefix + '失败：' + result.messages.join('；')
+  let text = prefix + '完成 — ' + result.messages.join('；')
+  const verify = result.verify
+  if (verify) {
+    if (verify.javaVersion) {
+      text += '；实测 java -version → ' + verify.javaVersion
+    } else if (verify.firstJava) {
+      text += '；java 会命中 ' + verify.firstJava + '（未取到版本输出）'
+    }
+  }
+  return text
+}
+
 function performSwitch(jdk) {
   const scope = getScope()
+  const snapshot = getSnapshot(false)
   const ops = []
-  if (getAutoFixPath()) ops.push('fixPath')
+
+  // 只在真正需要时才修复，并指向"卡住"的那个作用域（很可能在系统 PATH）
+  if (getAutoFixPath()) {
+    for (const target of snapshot.repairScopes) ops.push('fixPath:' + target)
+  }
   ops.push('setJavaHome')
 
   try {
@@ -747,12 +969,21 @@ function performSwitch(jdk) {
     notify('切换失败：' + result.messages.join('；'))
   } else {
     let message = 'JAVA_HOME → ' + (jdk.label || jdk.path) + '（' + scopeLabel(scope) + '）'
-    const otherScope = scope === SCOPE_MACHINE ? SCOPE_USER : SCOPE_MACHINE
-    const otherValue = queryEnvVar(otherScope, 'JAVA_HOME')
-    if (otherValue && !samePath(otherValue, jdk.path)) {
-      message += '；注意：' + scopeLabel(otherScope) + '仍有 JAVA_HOME=' + otherValue + '，会覆盖本次设置'
+    // JAVA_HOME 是普通变量：同名的用户级变量会覆盖系统级。所以只有写系统级时，
+    // 才可能被已有的用户级值盖掉；写用户级是能盖住系统级的，不该报警。
+    if (scope === SCOPE_MACHINE) {
+      const userValue = queryEnvVar(SCOPE_USER, 'JAVA_HOME')
+      if (userValue && !samePath(userValue, jdk.path)) {
+        message += '；注意：用户级 JAVA_HOME=' + userValue + ' 优先级更高，会让本次系统级设置失效'
+      }
     }
-    notify(message + '。新开的终端窗口生效，已打开的窗口需重开。')
+    const verify = result.verify
+    if (verify && verify.javaVersion) {
+      message += '；新进程实测 java -version → ' + verify.javaVersion
+    } else if (verify && verify.firstJava) {
+      message += '；java 将命中 ' + verify.firstJava
+    }
+    notify(message + '。已打开的终端需重开才生效。')
   }
 
   window.utools.outPlugin()
@@ -802,10 +1033,12 @@ function pickManualJdk() {
 }
 
 function runFixPath() {
-  const scope = getScope()
-  const result = runOps(['fixPath'], { scope: scope, target: '' })
+  const snapshot = getSnapshot(false)
+  const scopes = snapshot.repairScopes.length > 0 ? snapshot.repairScopes : [getScope()]
+  const ops = scopes.map((target) => 'fixPath:' + target)
+  const result = runOps(ops, { scope: getScope(), target: '' })
   invalidateSnapshot()
-  notify(result.ok ? 'PATH 修复完成：' + result.messages.join('；') : 'PATH 修复失败：' + result.messages.join('；'))
+  notify(formatResult('PATH 修复', result))
 }
 
 function runRemoveOtherJavaHome() {
@@ -876,28 +1109,26 @@ function buildListItems(keyword) {
     _search: 'rescan 重新扫描 刷新 更新',
   })
 
+  if (snapshot.repairScopes.length > 0) {
+    actionItems.push({
+      title: '⚠ 修复 PATH 抢占（改' + snapshot.repairScopes.map(scopeLabel).join(' 与 ') + '）',
+      description: snapshot.fixDescription,
+      icon: '',
+      _kind: 'fixPath',
+      _fix: true,
+      _search: 'path 修复 诊断 清理 fix 问题 抢占 javapath',
+    })
+  }
+
   actionItems.push({
     title: (snapshot.autoPath ? '☑' : '☐') + ' 切换时自动修复 PATH',
     description: snapshot.autoPath
-      ? '已开启：确保 %JAVA_HOME%\\bin 位于 PATH 最前，避免被 javapath 抢先'
+      ? '已开启：只在抢占确实存在时修复对应作用域（系统 PATH 需管理员）'
       : '已关闭：切换时只写 JAVA_HOME，不修改 PATH',
     icon: '',
     _kind: 'autoPath',
     _search: 'path 自动 修复 开关 设置',
   })
-
-  if (snapshot.shadowingEntry || !snapshot.pathHasEntry) {
-    actionItems.push({
-      title: '⚠ 修复 PATH',
-      description: snapshot.shadowingEntry
-        ? 'PATH 中的 ' + snapshot.shadowingEntry + ' 会抢先于 %JAVA_HOME%\\bin，点击修复'
-        : 'PATH 中缺少 %JAVA_HOME%\\bin，点击修复',
-      icon: '',
-      _kind: 'fixPath',
-      _fix: true,
-      _search: 'path 修复 诊断 清理 fix 问题',
-    })
-  }
 
   // JAVA_HOME 属于「普通变量」：同名的用户级变量会覆盖系统级变量。
   // 所以只有「写入系统级、且用户级已有值」时才会被覆盖；

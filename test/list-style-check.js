@@ -204,12 +204,14 @@ function assertMarks(stage) {
 
 async function main() {
   console.log('===== 场景 A：写入范围 = 用户级 =====')
-  console.log('用户级 PATH 缺少 %JAVA_HOME%\\bin，且存在一个会抢先的 java 目录；系统级另有 JAVA_HOME')
+  console.log('抢占项位于【系统】PATH，而用户 PATH 首项是 %JAVA_HOME%\\bin；系统级另有 JAVA_HOME')
 
   ENV.userJavaHome = null
   ENV.machineJavaHome = 'C:\\fake\\jdk-17-machine'
-  ENV.machinePath = '%JAVA_HOME%\\bin;C:\\Windows\\system32'
-  ENV.userPath = fakeJavaDir + ';C:\\Windows\\system32'
+  // 真实坏状态：会抢先的 java 目录在【系统】PATH 里，且系统 PATH 没有 %JAVA_HOME%\bin。
+  // 因为合并时系统 PATH 在前，此时只修用户 PATH 是徒劳的 —— 修复目标必须是系统 PATH。
+  ENV.machinePath = fakeJavaDir + ';C:\\Windows\\system32'
+  ENV.userPath = '%JAVA_HOME%\\bin;C:\\Windows\\system32'
 
   api.switch.args.enter({}, collect)
   await tick(260)
@@ -219,6 +221,12 @@ async function main() {
   check(
     items.some((item) => item._kind === 'fixPath' && item._fix),
     '「修复 PATH」被标记为修复类'
+  )
+  const fixItem = items.find((item) => item._kind === 'fixPath')
+  check(
+    !!fixItem && fixItem.description.indexOf('系统 PATH') >= 0,
+    '修复目标指向系统 PATH（合并时系统 PATH 在前，只修用户 PATH 无效）',
+    fixItem ? fixItem.title : '(缺少条目)'
   )
   check(
     !items.some((item) => item._kind === 'cleanConflict'),
