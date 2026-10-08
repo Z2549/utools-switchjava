@@ -218,7 +218,6 @@ node test/list-style-check.js   # 在 jsdom 里复刻客户端列表 DOM，验�
 - **PATH 是拼接而非覆盖，且系统 PATH 在前**：该顺序由插件自动识别，并把 `%JAVA_HOME%\bin` 前置到**真正卡住的那个作用域**（可能是系统 PATH，需 UAC）。列表里的红字项会写明修复目标。
 - 修复只做「重排」，不会删除 `javapath` 等条目。若你想彻底移除它，请在「系统变量」里自行删除。
 - 红色高亮依赖 uTools 列表组件的内部 DOM 结构（类名 `list-item` / `list-item-title`）。若未来版本改结构，最坏情况只是高亮失效，条目仍带有 `⚠` 前缀。
-- `description.png` 为 v1 时期的手工配置说明图，与 v2 无关，保留仅作历史记录。
 
 ## License
 
