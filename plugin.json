@@ -1,13 +1,30 @@
 {
-	
-	"logo": "logo.png",
-    "preload":"preload_list.js",
-    "platform":"win32",
-	"features": [
-		{
-		  "code": "switch",
-		  "explain": "快速切换java版本",
-			"cmds":["switchjava", "switch","java","8","11","17","18","21"]
-		}
-	]
+  "pluginName": "SwitchJava",
+  "description": "一键切换 Windows 的 JAVA_HOME 环境变量，自动识别本机已安装的 JDK",
+  "author": "Z2549",
+  "version": "2.0.0",
+  "homepage": "https://github.com/Z2549/utools-switchjava",
+  "logo": "logo.png",
+  "preload": "preload.js",
+  "platform": ["win32"],
+  "features": [
+    {
+      "code": "switch",
+      "explain": "快速切换 Java 版本",
+      "cmds": ["switchjava", "java", "javahome", "切换java"]
+    },
+    {
+      "code": "switch-version",
+      "explain": "输入版本号直接切换 Java",
+      "cmds": [
+        {
+          "type": "regex",
+          "label": "按版本号切换 Java",
+          "match": "/^(?:8|11|17|18|21|22|23|24|25)$/",
+          "minLength": 1,
+          "maxLength": 2
+        }
+      ]
+    }
+  ]
 }
