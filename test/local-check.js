@@ -49,7 +49,7 @@ function render(keyword) {
   const title = keyword === undefined ? 'enter（无关键词）' : 'search("' + keyword + '")'
   console.log('\n===== ' + title + ' =====')
   for (const item of items) {
-    console.log('  [' + item._kind + '] ' + item.title)
+    console.log('  ' + (item._fix ? '🟥' : '  ') + ' [' + item._kind + '] ' + item.title)
     console.log('        ' + item.description)
   }
   return items

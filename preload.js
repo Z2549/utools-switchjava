@@ -894,19 +894,23 @@ function buildListItems(keyword) {
         : 'PATH 中缺少 %JAVA_HOME%\\bin，点击修复',
       icon: '',
       _kind: 'fixPath',
+      _fix: true,
       _search: 'path 修复 诊断 清理 fix 问题',
     })
   }
 
-  const conflictScope = snapshot.scope === SCOPE_MACHINE ? SCOPE_USER : SCOPE_MACHINE
-  const conflictValue = conflictScope === SCOPE_MACHINE ? snapshot.envMachine : snapshot.envUser
-  if (conflictValue) {
+  // JAVA_HOME 属于「普通变量」：同名的用户级变量会覆盖系统级变量。
+  // 所以只有「写入系统级、且用户级已有值」时才会被覆盖；
+  // 反过来写用户级是能盖住系统级的，那种情况不算冲突，不该报警。
+  if (snapshot.scope === SCOPE_MACHINE && snapshot.envUser) {
     actionItems.push({
-      title: '⚠ 清理冲突的 JAVA_HOME',
-      description: scopeLabel(conflictScope) + ' 也存在 JAVA_HOME=' + conflictValue + '，会覆盖本次设置',
+      title: '⚠ 用户级 JAVA_HOME 会覆盖系统级',
+      description:
+        '用户级存在 JAVA_HOME=' + snapshot.envUser + '，它优先级更高，会让本次系统级设置失效；点击清除',
       icon: '',
       _kind: 'cleanConflict',
-      _search: 'conflict 冲突 清理 覆盖 重复',
+      _fix: true,
+      _search: 'conflict 冲突 清理 覆盖 重复 用户级',
     })
   }
 
@@ -947,14 +951,176 @@ function buildListItems(keyword) {
 }
 
 /* ================================================================== *
- * 十、模板插件应用入口
+ * 十、修复类条目的红色标识
+ *
+ * 为什么不能直接写 HTML：uTools 模板列表的 title / description 是按纯文本渲染的。
+ * uTools 7.8.0 客户端（resources/app.asar）中的列表组件是 React，渲染代码为
+ *     createElement('div', { className: 'list-item-title' }, item.title)
+ * 文本作为 React 子节点插入，标签会被转义，所以 title 里写 <span style="color:red">
+ * 只会把标签原样显示出来。官方亦未开放 item 的样式字段。
+ *
+ * 可行做法：模板插件的 preload 与列表界面处于同一个渲染进程、同一个 DOM 中
+ * （列表组件直接调用 window.exports[code].args.enter / search，说明二者同域），
+ * 因此可以：
+ *   1) 往 document.head 注入一段样式；
+ *   2) 给「修复类」条目的 .list-item 节点补上标记类，呈现红色文字 + 左侧红条。
+ *
+ * 列表节点由 React 管理，选中态切换时 React 会重写 className 抹掉标记类，
+ * 故用一个幂等的 MutationObserver 把标记补回来。
+ * 以上全部只是配色：任何一步失败都不影响切换功能，条目仍保留 ⚠ 前缀兜底。
+ * ================================================================== */
+
+const FIX_CLASS = 'switchjava-fix'
+const FIX_STYLE_ID = 'switchjava-fix-style'
+const FIX_COLOR_LIGHT = '#d92d20'
+const FIX_COLOR_DARK = '#ff7b72'
+
+/** 当前列表中「修复类」条目的标题集合（按 title 匹配 DOM 节点） */
+let fixTitles = []
+let fixObserver = null
+let fixScheduled = false
+
+function hasDom() {
+  return typeof document !== 'undefined' && !!document && !!document.head && !!document.body
+}
+
+function hexToRgba(hex, alpha) {
+  return (
+    'rgba(' +
+    parseInt(hex.slice(1, 3), 16) +
+    ',' +
+    parseInt(hex.slice(3, 5), 16) +
+    ',' +
+    parseInt(hex.slice(5, 7), 16) +
+    ',' +
+    alpha +
+    ')'
+  )
+}
+
+function buildFixCss() {
+  const base = [
+    '.list .list-item.' + FIX_CLASS + '{box-shadow:inset 3px 0 0 0 ' + FIX_COLOR_LIGHT + ';}',
+    '.list .list-item.' + FIX_CLASS + ' .list-item-title{color:' + FIX_COLOR_LIGHT + ' !important;font-weight:600;}',
+    '.list .list-item.' + FIX_CLASS + ' .list-item-description{color:' + FIX_COLOR_LIGHT + ' !important;opacity:.85;}',
+  ].join('')
+  const selected =
+    '.list .list-item.' + FIX_CLASS + '.list-item-selected{background-color:' + hexToRgba(FIX_COLOR_LIGHT, 0.16) + ';}'
+  const dark = [
+    '.list .list-item.' + FIX_CLASS + ' .list-item-title{color:' + FIX_COLOR_DARK + ' !important;}',
+    '.list .list-item.' + FIX_CLASS + ' .list-item-description{color:' + FIX_COLOR_DARK + ' !important;}',
+    '.list .list-item.' + FIX_CLASS + '.list-item-selected{background-color:' + hexToRgba(FIX_COLOR_DARK, 0.22) + ';}',
+  ].join('')
+  return base + selected + '@media (prefers-color-scheme: dark){' + dark + '}'
+}
+
+function installFixStyle() {
+  if (!hasDom()) return false
+  try {
+    if (document.getElementById(FIX_STYLE_ID)) return true
+    const style = document.createElement('style')
+    style.id = FIX_STYLE_ID
+    style.textContent = buildFixCss()
+    document.head.appendChild(style)
+    return true
+  } catch (err) {
+    return false
+  }
+}
+
+/** 幂等：该加标记的加上、该去掉的去掉了，重复执行不会产生额外变化 */
+function applyFixMarks() {
+  fixScheduled = false
+  if (!hasDom()) return
+
+  let nodes
+  try {
+    nodes = document.querySelectorAll('.list .list-item')
+  } catch (err) {
+    return
+  }
+
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i]
+    const titleNode = node.querySelector('.list-item-title')
+    const title = titleNode ? String(titleNode.textContent || '') : ''
+    const should = fixTitles.length > 0 && fixTitles.indexOf(title) >= 0
+    try {
+      if (node.classList.contains(FIX_CLASS) !== should) node.classList.toggle(FIX_CLASS, should)
+    } catch (err) {
+      /* 单个节点异常不影响其它条目 */
+    }
+  }
+}
+
+function scheduleFixMarks() {
+  if (fixScheduled) return
+  fixScheduled = true
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(applyFixMarks)
+  } else {
+    setTimeout(applyFixMarks, 16)
+  }
+  // 兜底：React 若把更新推迟到下一帧之后，再补一次
+  setTimeout(applyFixMarks, 100)
+}
+
+function startFixObserver() {
+  if (fixObserver || !hasDom() || typeof MutationObserver !== 'function') return
+  try {
+    fixObserver = new MutationObserver(scheduleFixMarks)
+    fixObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class'],
+    })
+  } catch (err) {
+    fixObserver = null
+  }
+}
+
+function stopFixObserver() {
+  if (!fixObserver) return
+  try {
+    fixObserver.disconnect()
+  } catch (err) {
+    /* 忽略 */
+  }
+  fixObserver = null
+}
+
+/** 每次刷新列表后调用：同步标记集合，并立即（及异步）重打标记 */
+function syncFixMarks(items) {
+  const titles = []
+  for (const item of items) {
+    if (item && item._fix && titles.indexOf(item.title) < 0) titles.push(item.title)
+  }
+  fixTitles = titles
+
+  if (!hasDom()) return
+
+  if (titles.length === 0) {
+    stopFixObserver()
+    applyFixMarks()
+    return
+  }
+  if (!installFixStyle()) return
+  startFixObserver()
+  scheduleFixMarks()
+}
+
+/* ================================================================== *
+ * 十一、模板插件应用入口
  * ================================================================== */
 
 let lastKeyword = ''
 
 function refresh(callbackSetList, keyword) {
   lastKeyword = keyword === undefined ? lastKeyword : keyword
-  callbackSetList(buildListItems(lastKeyword))
+  const items = buildListItems(lastKeyword)
+  callbackSetList(items)
+  syncFixMarks(items)
 }
 
 window.exports = {
@@ -1054,4 +1220,17 @@ window.exports = {
       },
     },
   },
+}
+
+/* 离开插件时撤销标记，避免在其它插件的列表里残留样式观察 */
+try {
+  if (typeof utools.onPluginOut === 'function') {
+    utools.onPluginOut(() => {
+      fixTitles = []
+      stopFixObserver()
+      applyFixMarks()
+    })
+  }
+} catch (err) {
+  /* 旧版本 uTools 没有该 API 时忽略 */
 }
